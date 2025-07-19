@@ -1,1 +1,4 @@
 raw_data/
+config.ini
+__pycache__/
+*.py[cod]
