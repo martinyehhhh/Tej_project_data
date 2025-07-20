@@ -112,6 +112,8 @@ class MySQLHandler:
             tt1 VARCHAR(2) COMMENT '主旨末尾 2 字',
             tt2 VARCHAR(4) COMMENT '主旨末尾 4 字',
             cl INT COMMENT '重大訊息分類(共 12 類，預設 99)',
+            openai_processed TINYINT(1) DEFAULT 0 COMMENT '是否已經生成 OpenAI 報告 (0:未處理, 1:已處理)',
+            openai_processed_at TIMESTAMP NULL COMMENT 'OpenAI 報告生成時間',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -397,6 +399,43 @@ class MySQLHandler:
         except Error as e:
             logging.error(f"查詢統計失敗: {e}")
             return None
+    
+    def select_database(self):
+        """選擇資料庫"""
+        if not self.connection:
+            logging.error("未連接到 MySQL")
+            return False
+            
+        try:
+            database_name = self.config.get('mysql', 'database')
+            cursor = self.connection.cursor()
+            cursor.execute(f"USE {database_name}")
+            logging.info(f"已選擇資料庫: {database_name}")
+            return True
+        except Error as e:
+            logging.error(f"選擇資料庫失敗: {e}")
+            return False
+    
+    def update_openai_processed_status(self, record_id, status=True):
+        """更新 OpenAI 處理狀態"""
+        if not self.connection:
+            logging.error("未連接到 MySQL")
+            return False
+            
+        try:
+            cursor = self.connection.cursor()
+            sql = """
+            UPDATE sbj_pu11 
+            SET openai_processed = %s, openai_processed_at = NOW()
+            WHERE id = %s
+            """
+            cursor.execute(sql, (1 if status else 0, record_id))
+            self.connection.commit()
+            logging.info(f"已更新記錄 {record_id} 的 OpenAI 處理狀態為: {status}")
+            return True
+        except Error as e:
+            logging.error(f"更新 OpenAI 處理狀態失敗: {e}")
+            return False
     
     def close(self):
         """關閉資料庫連接"""
