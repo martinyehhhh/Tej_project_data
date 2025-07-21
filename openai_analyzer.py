@@ -15,6 +15,7 @@ from datetime import datetime
 from create_mysql_db import MySQLHandler
 import configparser
 import tiktoken
+import time
 
 class OpenAIAnalyzer:
     def __init__(self, config_file='config.ini', test_mode=False):
@@ -22,6 +23,13 @@ class OpenAIAnalyzer:
         self.test_mode = test_mode
         self.load_config()
         self.setup_openai()
+        
+        # 限速處理相關變數
+        self.rate_limit_count = 0  # 累計限速次數
+        self.consecutive_success = 0  # 連續成功次數
+        self.max_rate_limit_attempts = 4  # 最大重試次數（第4次限速時停止程式）
+        self.base_wait_time = 60  # 基礎等待時間（秒）
+        self.reset_threshold = 5  # 連續成功5次後重置限速計數
         
     def load_config(self):
         """載入設定檔"""
@@ -86,6 +94,85 @@ class OpenAIAnalyzer:
             logging.info(f"選擇 gpt-4o-mini (預估需求: {total_tokens_needed} tokens)")
             
         return model, min(expected_output_tokens, 4000)  # 限制最大輸出長度
+    
+    def handle_rate_limit(self):
+        """處理限速情況的智能等待機制"""
+        self.rate_limit_count += 1
+        self.consecutive_success = 0  # 重置連續成功計數
+        
+        # 檢查是否達到最大重試次數
+        if self.rate_limit_count >= self.max_rate_limit_attempts:
+            error_msg = f"已達到最大限速重試次數 ({self.max_rate_limit_attempts} 次)，程式將停止執行。"
+            logging.error(error_msg)
+            raise Exception(error_msg)
+        
+        # 計算等待時間（指數退避：第1次60秒，第2次120秒，第3次240秒...）
+        wait_time = self.base_wait_time * (2 ** (self.rate_limit_count - 1))
+        wait_minutes = wait_time / 60
+        
+        logging.warning(f"遇到限速 (第 {self.rate_limit_count} 次)，將等待 {wait_minutes:.1f} 分鐘後重試...")
+        logging.info(f"預計恢復時間: {(datetime.now() + pd.Timedelta(seconds=wait_time)).strftime('%H:%M:%S')}")
+        
+        # 分段等待，每30秒顯示一次剩餘時間
+        remaining_time = wait_time
+        while remaining_time > 0:
+            sleep_duration = min(30, remaining_time)
+            time.sleep(sleep_duration)
+            remaining_time -= sleep_duration
+            
+            if remaining_time > 0:
+                remaining_minutes = remaining_time / 60
+                logging.info(f"還需等待 {remaining_minutes:.1f} 分鐘...")
+        
+        logging.info("等待結束，準備重新嘗試...")
+    
+    def record_success(self):
+        """記錄成功執行，用於重置限速計數"""
+        self.consecutive_success += 1
+        
+        # 如果連續成功達到閾值，重置限速計數
+        if self.consecutive_success >= self.reset_threshold:
+            if self.rate_limit_count > 0:
+                logging.info(f"連續成功 {self.reset_threshold} 次，重置限速計數 (之前: {self.rate_limit_count} 次)")
+                self.rate_limit_count = 0
+            self.consecutive_success = 0
+    
+    def call_openai_with_retry(self, model, messages, max_tokens, temperature, analysis_type="未知"):
+        """帶有限速重試機制的 OpenAI API 呼叫"""
+        max_attempts = 3  # 每次分析的最大重試次數
+        
+        for attempt in range(max_attempts):
+            try:
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature
+                )
+                
+                # 成功執行，記錄成功
+                self.record_success()
+                return response
+                
+            except openai.RateLimitError as e:
+                logging.error(f"{analysis_type} 分析遇到限速錯誤: {e}")
+                
+                if attempt < max_attempts - 1:
+                    # 還有重試機會，處理限速
+                    self.handle_rate_limit()
+                    logging.info(f"重試 {analysis_type} 分析 (第 {attempt + 2} 次嘗試)")
+                else:
+                    # 已達到最大重試次數
+                    logging.error(f"{analysis_type} 分析達到最大重試次數，跳過此次分析")
+                    raise e
+                    
+            except Exception as e:
+                # 其他錯誤直接拋出
+                logging.error(f"{analysis_type} 分析發生錯誤: {e}")
+                raise e
+        
+        # 理論上不會到達這裡
+        raise Exception(f"{analysis_type} 分析失敗")
     
     def log_openai_conversation(self, analysis_type, prompt, response, output_dir, file_prefix, model_used=None):
         """記錄 OpenAI 對話內容到檔案"""
@@ -183,11 +270,13 @@ class OpenAIAnalyzer:
 """
         
         try:
-            response = self.client.chat.completions.create(
+            messages = [{"role": "user", "content": prompt}]
+            response = self.call_openai_with_retry(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
                 max_tokens=max_tokens,
-                temperature=0.3
+                temperature=0.3,
+                analysis_type="摘要"
             )
             result = response.choices[0].message.content.strip()
             
@@ -230,11 +319,13 @@ class OpenAIAnalyzer:
 """
         
         try:
-            response = self.client.chat.completions.create(
+            messages = [{"role": "user", "content": prompt}]
+            response = self.call_openai_with_retry(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
                 max_tokens=max_tokens,
-                temperature=0.2
+                temperature=0.2,
+                analysis_type="時間"
             )
             result = response.choices[0].message.content.strip()
             
@@ -282,11 +373,13 @@ class OpenAIAnalyzer:
 """
         
         try:
-            response = self.client.chat.completions.create(
+            messages = [{"role": "user", "content": prompt}]
+            response = self.call_openai_with_retry(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
                 max_tokens=max_tokens,
-                temperature=0.2
+                temperature=0.2,
+                analysis_type="數量金額"
             )
             result = response.choices[0].message.content.strip()
             
@@ -329,11 +422,13 @@ class OpenAIAnalyzer:
 """
         
         try:
-            response = self.client.chat.completions.create(
+            messages = [{"role": "user", "content": prompt}]
+            response = self.call_openai_with_retry(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=messages,
                 max_tokens=max_tokens,
-                temperature=0.2
+                temperature=0.2,
+                analysis_type="人物關係"
             )
             result = response.choices[0].message.content.strip()
             
@@ -522,6 +617,7 @@ def main():
     logging.info("OpenAI 公告分析器開始執行")
     logging.info(f"執行參數: config={args.config}, limit={args.limit}, output_dir={args.output_dir}")
     logging.info(f"測試模式: {'啟用' if args.test_mode else '關閉'}")
+    logging.info(f"限速處理機制: 啟用 (最大重試 {4} 次，連續成功 {5} 次重置)")
     logging.info(f"日誌檔案: {args.log_file}")
     logging.info("=" * 60)
     
@@ -563,6 +659,7 @@ def main():
         logging.info("分析完成")
         logging.info(f"總處理時間: {processing_time}")
         logging.info(f"平均每筆公告處理時間: {processing_time / len(announcements)}")
+        logging.info(f"限速統計: 總計 {analyzer.rate_limit_count} 次，連續成功 {analyzer.consecutive_success} 次")
         logging.info(f"日誌檔案已儲存至: {args.log_file}")
         logging.info("=" * 60)
         
