@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 OpenAI API 公告分析器
-針對 sbj_pu11 表中 CL=1 的公告進行結構化分析
+針對 sbj_pu11 表中 RULC IN (1,11) 的公告進行結構化分析
 生成摘要、when、how_much、who_what 四種 CSV 格式解析
 """
 
@@ -200,18 +200,18 @@ class OpenAIAnalyzer:
             f.write(log_content)
         
     def get_cl1_announcements(self, mysql_handler, limit=None):
-        """從資料庫取得 CL=1 的公告，並對應 tej_pu11_1 表的 txt 內容"""
+        """從資料庫取得 RULC=1,11 的公告，並對應 tej_pu11_1 表的 txt 內容"""
         if not mysql_handler.connection:
             logging.error("MySQL 未連接")
             return None
             
         try:
             cursor = mysql_handler.connection.cursor(dictionary=True)
-            # 先查詢 sbj_pu11 中 cl=1 且尚未處理的公告
+            # 先查詢 sbj_pu11 中 rulc in (1,11) 且尚未處理的公告，包含所有需要的欄位
             sql = """
-            SELECT id, ban, code, name, d_reals, hr_reals, od, cl
+            SELECT id, ban, code, name, d_reals, hr_reals, od, cl, rulc
             FROM sbj_pu11 
-            WHERE cl = 1 
+            WHERE rulc IN (1, 11)
             AND openai_processed = 0 
             ORDER BY d_reals DESC, hr_reals DESC
             """
@@ -248,14 +248,14 @@ class OpenAIAnalyzer:
                     announcement['content'] = combined_content
                     results.append(announcement)
             
-            logging.info(f"找到 {len(results)} 筆 CL=1 且尚未處理的公告有對應的 tej_pu11_1 內容")
+            logging.info(f"找到 {len(results)} 筆 RULC IN (1,11) 且尚未處理的公告有對應的 tej_pu11_1 內容")
             return results
             
         except Exception as e:
-            logging.error(f"查詢 CL=1 公告失敗: {e}")
+            logging.error(f"查詢 RULC IN (1,11) 公告失敗: {e}")
             return None
 
-    def analyze_summary(self, content, output_dir=None, file_prefix=None):
+    def analyze_summary(self, content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir=None, file_prefix=None):
         """生成摘要分析"""
         # 動態選擇模型
         model, max_tokens = self.select_model(content, "summary")
@@ -263,7 +263,17 @@ class OpenAIAnalyzer:
         prompt = f"""
 請分析以下證交所公告內容，提供簡潔的摘要（50-100字）：
 
-公告內容：
+【公告基本資訊】
+公告ID: {ann_id}
+統一編號(BAN): {ban}
+公司代碼: {code}
+公司名稱: {name}
+發言日期(D_REALS): {d_reals}
+發言時間(HR_REALS): {hr_reals}
+公告序號(OD): {od}
+法規條款(RULC): {rulc}
+
+【公告內容】
 {content}
 
 請以繁體中文回應，格式為純文字摘要。
@@ -289,7 +299,7 @@ class OpenAIAnalyzer:
             logging.error(f"摘要分析失敗: {e}")
             return "分析失敗"
 
-    def analyze_when(self, content, output_dir=None, file_prefix=None):
+    def analyze_when(self, content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir=None, file_prefix=None):
         """分析時間相關資訊"""
         # 動態選擇模型
         model, max_tokens = self.select_model(content, "when")
@@ -297,7 +307,17 @@ class OpenAIAnalyzer:
         prompt = f"""
 請分析以下證交所公告內容，提取所有時間相關資訊，以 CSV 格式輸出。
 
-公告內容：
+【公告基本資訊】
+公告ID: {ann_id}
+統一編號(BAN): {ban}
+公司代碼: {code}
+公司名稱: {name}
+發言日期(D_REALS): {d_reals}
+發言時間(HR_REALS): {hr_reals}
+公告序號(OD): {od}
+法規條款(RULC): {rulc}
+
+【公告內容】
 {content}
 
 重要注意事項：
@@ -338,7 +358,7 @@ class OpenAIAnalyzer:
             logging.error(f"when 分析失敗: {e}")
             return "項目說明,日期時間\n分析失敗,N/A"
 
-    def analyze_how_much(self, content, output_dir=None, file_prefix=None):
+    def analyze_how_much(self, content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir=None, file_prefix=None):
         """分析數量金額相關資訊"""
         # 動態選擇模型
         model, max_tokens = self.select_model(content, "how_much")
@@ -346,7 +366,17 @@ class OpenAIAnalyzer:
         prompt = f"""
 請分析以下證交所公告內容，提取所有數量、金額、比率相關資訊，以 CSV 格式輸出。
 
-公告內容：
+【公告基本資訊】
+公告ID: {ann_id}
+統一編號(BAN): {ban}
+公司代碼: {code}
+公司名稱: {name}
+發言日期(D_REALS): {d_reals}
+發言時間(HR_REALS): {hr_reals}
+公告序號(OD): {od}
+法規條款(RULC): {rulc}
+
+【公告內容】
 {content}
 
 重要注意事項：
@@ -392,7 +422,7 @@ class OpenAIAnalyzer:
             logging.error(f"how_much 分析失敗: {e}")
             return "類別,項目說明,數值（原始）,單位,幣別\n分析失敗,N/A,N/A,N/A,N/A"
 
-    def analyze_who_what(self, content, output_dir=None, file_prefix=None):
+    def analyze_who_what(self, content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir=None, file_prefix=None):
         """分析人物關係相關資訊"""
         # 動態選擇模型
         model, max_tokens = self.select_model(content, "who_what")
@@ -400,7 +430,17 @@ class OpenAIAnalyzer:
         prompt = f"""
 請分析以下證交所公告內容，提取所有相關人物、公司、標的物及其關係，以 CSV 格式輸出。
 
-公告內容：
+【公告基本資訊】
+公告ID: {ann_id}
+統一編號(BAN): {ban}
+公司代碼: {code}
+公司名稱: {name}
+發言日期(D_REALS): {d_reals}
+發言時間(HR_REALS): {hr_reals}
+公告序號(OD): {od}
+法規條款(RULC): {rulc}
+
+【公告內容】
 {content}
 
 請參考以下格式輸出 CSV：
@@ -466,24 +506,29 @@ class OpenAIAnalyzer:
         try:
             # 如果需要，寫入表頭
             if when_header_needed:
-                when_file.write("公告ID,公司代碼,公司名稱,日期,項目說明,日期時間\n")
+                when_file.write("公告ID,BAN,公司代碼,公司名稱,D_REALS,HR_REALS,OD,RULC,項目說明,日期時間\n")
             if how_much_header_needed:
-                how_much_file.write("公告ID,公司代碼,公司名稱,日期,類別,項目說明,數值（原始）,單位,幣別\n")
+                how_much_file.write("公告ID,BAN,公司代碼,公司名稱,D_REALS,HR_REALS,OD,RULC,類別,項目說明,數值（原始）,單位,幣別\n")
             if who_what_header_needed:
-                who_what_file.write("公告ID,公司代碼,公司名稱,日期,項目,名稱,說明／關係\n")
+                who_what_file.write("公告ID,BAN,公司代碼,公司名稱,D_REALS,HR_REALS,OD,RULC,項目,名稱,說明／關係\n")
             
             for i, announcement in enumerate(announcements):
                 try:
                     ann_id = announcement['id']
+                    ban = announcement['ban']
                     code = announcement['code']
                     name = announcement['name']
+                    d_reals = announcement['d_reals']
+                    hr_reals = announcement['hr_reals']
+                    od = announcement['od']
+                    rulc = announcement['rulc']
                     content = announcement['content']  # 使用從 tej_pu11_1 表取得的 txt 內容
                     
                     logging.info(f"正在分析公告 {i+1}/{len(announcements)}: {code} {name} (ID: {ann_id})")
                     start_time = datetime.now()
                     
                     # 建立檔案名稱前綴
-                    file_prefix = f"{ann_id}_{code}_{announcement['d_reals']}"
+                    file_prefix = f"{ann_id}_{code}_{d_reals}"
                     
                     # 檢查內容長度並記錄
                     content_length = len(content)
@@ -500,11 +545,13 @@ class OpenAIAnalyzer:
                     with open(f"{output_dir}/{file_prefix}_original_content.txt", 'w', encoding='utf-8') as f:
                         f.write("=== 送給 OpenAI 的原始內容 ===\n\n")
                         f.write(f"公告ID: {ann_id}\n")
+                        f.write(f"BAN: {ban}\n")
                         f.write(f"公司代碼: {code}\n") 
                         f.write(f"公司名稱: {name}\n")
-                        f.write(f"日期: {announcement['d_reals']}\n")
-                        f.write(f"時間: {announcement['hr_reals']}\n")
-                        f.write(f"OD: {announcement['od']}\n")
+                        f.write(f"D_REALS: {d_reals}\n")
+                        f.write(f"HR_REALS: {hr_reals}\n")
+                        f.write(f"OD: {od}\n")
+                        f.write(f"RULC: {rulc}\n")
                         f.write("=" * 50 + "\n\n")
                         f.write(content)
                         f.write("\n\n" + "=" * 50)
@@ -513,27 +560,28 @@ class OpenAIAnalyzer:
                     logging.info(f"開始進行 4 種分析...")
                     
                     summary_start = datetime.now()
-                    summary = self.analyze_summary(content, output_dir, file_prefix)
+                    summary = self.analyze_summary(content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir, file_prefix)
                     summary_time = datetime.now() - summary_start
                     logging.info(f"摘要分析完成 ({summary_time.total_seconds():.2f}秒)")
                     
                     when_start = datetime.now()
-                    when_csv = self.analyze_when(content, output_dir, file_prefix)
+                    when_csv = self.analyze_when(content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir, file_prefix)
                     when_time = datetime.now() - when_start
                     logging.info(f"時間分析完成 ({when_time.total_seconds():.2f}秒)")
                     
                     how_much_start = datetime.now()
-                    how_much_csv = self.analyze_how_much(content, output_dir, file_prefix)
+                    how_much_csv = self.analyze_how_much(content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir, file_prefix)
                     how_much_time = datetime.now() - how_much_start
                     logging.info(f"數量金額分析完成 ({how_much_time.total_seconds():.2f}秒)")
                     
                     who_what_start = datetime.now()
-                    who_what_csv = self.analyze_who_what(content, output_dir, file_prefix)
+                    who_what_csv = self.analyze_who_what(content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir, file_prefix)
                     who_what_time = datetime.now() - who_what_start
                     logging.info(f"人物關係分析完成 ({who_what_time.total_seconds():.2f}秒)")
                     
                     # 寫入摘要到合併檔案
-                    summary_file.write(f"=== 公告 {ann_id} - {code} {name} ({announcement['d_reals']}) ===\n")
+                    summary_file.write(f"=== 公告 {ann_id} - {ban} - {code} {name} ({d_reals}) ===\n")
+                    summary_file.write(f"BAN: {ban}, D_REALS: {d_reals}, HR_REALS: {hr_reals}, OD: {od}, RULC: {rulc}\n")
                     summary_file.write(f"{summary}\n\n")
                     summary_file.flush()  # 立即寫入檔案
                     
@@ -543,7 +591,7 @@ class OpenAIAnalyzer:
                         # 跳過 CSV 的表頭行，從第二行開始處理
                         for line in when_lines[1:]:
                             if line.strip():
-                                when_file.write(f"{ann_id},{code},{name},{announcement['d_reals']},{line}\n")
+                                when_file.write(f"{ann_id},{ban},{code},{name},{d_reals},{hr_reals},{od},{rulc},{line}\n")
                         when_file.flush()  # 立即寫入檔案
                     
                     # 處理 how_much CSV - 加入公告資訊欄位
@@ -552,7 +600,7 @@ class OpenAIAnalyzer:
                         # 跳過 CSV 的表頭行，從第二行開始處理
                         for line in how_much_lines[1:]:
                             if line.strip():
-                                how_much_file.write(f"{ann_id},{code},{name},{announcement['d_reals']},{line}\n")
+                                how_much_file.write(f"{ann_id},{ban},{code},{name},{d_reals},{hr_reals},{od},{rulc},{line}\n")
                         how_much_file.flush()  # 立即寫入檔案
                     
                     # 處理 who_what CSV - 加入公告資訊欄位
@@ -561,7 +609,7 @@ class OpenAIAnalyzer:
                         # 跳過 CSV 的表頭行，從第二行開始處理
                         for line in who_what_lines[1:]:
                             if line.strip():
-                                who_what_file.write(f"{ann_id},{code},{name},{announcement['d_reals']},{line}\n")
+                                who_what_file.write(f"{ann_id},{ban},{code},{name},{d_reals},{hr_reals},{od},{rulc},{line}\n")
                         who_what_file.flush()  # 立即寫入檔案
                     
                     # 更新資料庫中的處理狀態
@@ -639,13 +687,13 @@ def main():
             logging.error("選擇資料庫失敗")
             return
             
-        # 取得 CL=1 的公告
+        # 取得 RULC IN (1,11) 的公告
         announcements = analyzer.get_cl1_announcements(mysql_handler, limit=args.limit)
         if not announcements:
-            logging.error("未找到 CL=1 的公告")
+            logging.error("未找到 RULC IN (1,11) 的公告")
             return
             
-        logging.info(f"找到 {len(announcements)} 筆 CL=1 公告，開始分析...")
+        logging.info(f"找到 {len(announcements)} 筆 RULC IN (1,11) 公告，開始分析...")
         
         # 處理公告
         start_time = datetime.now()

@@ -437,6 +437,64 @@ class MySQLHandler:
             logging.error(f"更新 OpenAI 處理狀態失敗: {e}")
             return False
     
+    def reset_all_openai_processed_status(self):
+        """重置所有記錄的 OpenAI 處理狀態為未處理"""
+        if not self.connection:
+            logging.error("未連接到 MySQL")
+            return False
+            
+        try:
+            cursor = self.connection.cursor()
+            
+            # 先查詢目前已處理的記錄數量
+            cursor.execute("SELECT COUNT(*) as count FROM sbj_pu11 WHERE openai_processed = 1")
+            result = cursor.fetchone()
+            processed_count = result[0] if result else 0
+            
+            if processed_count == 0:
+                logging.info("目前沒有已處理的記錄，無需重置")
+                return True
+            
+            # 重置所有已處理記錄的狀態
+            sql = """
+            UPDATE sbj_pu11 
+            SET openai_processed = 0, openai_processed_at = NULL
+            WHERE openai_processed = 1
+            """
+            cursor.execute(sql)
+            affected_rows = cursor.rowcount
+            self.connection.commit()
+            
+            logging.info(f"成功重置 {affected_rows} 筆記錄的 OpenAI 處理狀態為未處理")
+            return True
+            
+        except Error as e:
+            logging.error(f"重置 OpenAI 處理狀態失敗: {e}")
+            self.connection.rollback()
+            return False
+    
+    def get_openai_processed_stats(self):
+        """取得 OpenAI 處理狀態統計"""
+        if not self.connection:
+            logging.error("未連接到 MySQL")
+            return None
+            
+        try:
+            cursor = self.connection.cursor(dictionary=True)
+            cursor.execute("""
+                SELECT 
+                    openai_processed,
+                    COUNT(*) as count
+                FROM sbj_pu11 
+                GROUP BY openai_processed
+                ORDER BY openai_processed
+            """)
+            results = cursor.fetchall()
+            return results
+        except Error as e:
+            logging.error(f"查詢 OpenAI 處理狀態統計失敗: {e}")
+            return None
+    
     def close(self):
         """關閉資料庫連接"""
         if self.connection:
@@ -458,6 +516,12 @@ def main():
     parser.add_argument('--create-tej', action='store_true', help='創建 TEJ_PU11 資料表')
     parser.add_argument('--query-tej', action='store_true', help='查詢 TEJ_PU11 最新資料')
     parser.add_argument('--stats-tej', action='store_true', help='顯示 TEJ_PU11 統計')
+    
+    # OpenAI 處理狀態相關參數
+    parser.add_argument('--reset-openai-status', action='store_true', 
+                       help='重置所有記錄的 OpenAI 處理狀態為未處理')
+    parser.add_argument('--openai-stats', action='store_true', 
+                       help='顯示 OpenAI 處理狀態統計')
     
     args = parser.parse_args()
     
@@ -558,6 +622,25 @@ def main():
                 print(f"公司數量: {stats['unique_companies']}")
                 print(f"CLA 類別數: {stats['unique_cla']}")
                 print(f"日期範圍: {stats['min_date']} - {stats['max_date']}")
+        
+        # 重置 OpenAI 處理狀態
+        if args.reset_openai_status:
+            print("\n正在重置所有記錄的 OpenAI 處理狀態...")
+            if mysql_handler.reset_all_openai_processed_status():
+                print("✓ OpenAI 處理狀態重置完成")
+            else:
+                print("✗ OpenAI 處理狀態重置失敗")
+        
+        # 顯示 OpenAI 處理狀態統計
+        if args.openai_stats:
+            stats = mysql_handler.get_openai_processed_stats()
+            if stats:
+                print("\nOpenAI 處理狀態統計:")
+                for stat in stats:
+                    status_text = "已處理" if stat['openai_processed'] == 1 else "未處理"
+                    print(f"{status_text}: {stat['count']} 筆")
+            else:
+                print("無法取得 OpenAI 處理狀態統計")
                     
     finally:
         mysql_handler.close()
