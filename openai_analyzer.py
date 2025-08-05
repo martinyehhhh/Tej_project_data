@@ -364,7 +364,7 @@ class OpenAIAnalyzer:
         model, max_tokens = self.select_model(content, "how_much")
         
         prompt = f"""
-請分析以下證交所公告內容，提取所有數量、金額、比率相關資訊，以 CSV 格式輸出。
+請分析以下證交所公告內容，將所有項目的金額、數量、比率分欄做成表格。金額請拆成數值、幣值、單位三欄。不必換算。也請列示標的物，並放編號之後。
 
 【公告基本資訊】
 公告ID: {ann_id}
@@ -379,25 +379,66 @@ class OpenAIAnalyzer:
 【公告內容】
 {content}
 
-重要注意事項：
-1. 請保持原文中的幣別格式，不要進行任何轉換或翻譯
-2. 如果原文是「美元」，請保持「美元」，不要轉換成「USD」
-3. 如果原文是「EUR」，請保持「EUR」，不要轉換成「歐元」
-4. 如果原文是「新台幣」，請保持「新台幣」，不要轉換成「TWD」
-5. 完全依照原文的幣別表達方式
+請全面提取所有相關的數量、金額、比率資訊，特別注意以下各類項目：
 
-請參考以下格式輸出 CSV：
+**投資交易類：**
+- 本次投資/交易金額（分標的物列示）
+- 單位價格、交易數量、交易總金額
+- 累積投資金額（原始投資金額）
+- 累積持有數量和金額
+
+**持股比例類：**
+- 本次交易後持股比例
+- 累積持股比例
+- 間接持股比例
+- 表決權比例
+
+**財務比例類：**
+- 占總資產比例
+- 占股東權益比例
+- 占母公司權益比例
+- 其他財務比率
+
+**營運資金類：**
+- 營運資金數額
+- 最近期財報相關數據
+
+**其他重要數據：**
+- 合計金額
+- 預估價款
+- 任何具體的數值、百分比或金額
+
+請以 CSV 格式輸出，欄位如下：
 類別,項目說明,數值（原始）,單位,幣別
-數量,交易數量（本次收購）,9191782,股,N/A
-金額,每單位價格（本次收購）,1.1,歐元/股,歐元
-金額,交易總金額（本次收購）,10110960,歐元,歐元
-比率,累積持股比例,92.21,%,N/A
 
-注意事項：
+範例格式參考：
+類別,項目說明,數值（原始）,單位,幣別
+金額,投資金額 - TCC Oyak Amsterdam Holdings B.V.,201391,仟元,歐元
+金額,TCC Oyak Amsterdam Holdings B.V. 累積持有金額（原始投資金額）,201391,仟元,歐元
+金額,投資金額 - Cimpor Portugal Holdings SGPS S.A.,419673,仟元,歐元
+金額,Cimpor Portugal Holdings SGPS S.A. 累積持有金額（原始投資金額）,419673,仟元,歐元
+數量,00857B永豐20年美公債 交易數量,1100000,股,N/A
+金額,00857B永豐20年美公債 單位價格,26.82,元,新台幣
+金額,00857B永豐20年美公債 交易總金額,29502,仟元,新台幣
+數量,00857B 累積持有數量,1100000,股,N/A
+金額,00857B 累積持有金額,29502,仟元,新台幣
+金額,合計投資總額,70327,仟元,新台幣
+比率,TCC Oyak Amsterdam Holdings B.V. 持股比率,60,%,N/A
+比率,對 Oyak F 間接持股比例,75.8,%,N/A
+比率,占公司總資產比例,91.50,%,N/A
+比率,占股東權益比例,151.61,%,N/A
+金額,最近期營運資金數額,238512,仟元,新台幣
+
+重要注意事項：
 1. 類別只能是：數量、金額、比率
-2. 數值請移除千分位逗號
-3. 幣別請完全依照原文表達，不要進行任何轉換
-4. 如果無幣別概念，用 N/A
+2. 項目說明要完整描述，包含標的物或相關公司名稱
+3. 對於有多個標的物的交易，請分別列出每個標的物的詳細資訊
+4. 幣別請完全依照原文表達，不要進行任何轉換（如：「美元」保持「美元」，「EUR」保持「EUR」，「新台幣」保持「新台幣」）
+5. 如果無幣別概念，用 N/A
+6. 數值請移除千分位逗號，輸出純數字格式
+7. 對於同一標的物，請分別列出「投資金額」和「累積持有金額」
+8. 請盡可能提取所有相關的數量、金額、比率資訊，包括累積數據
+9. 特別注意區分「本次投資/交易」與「累積持有」的差異
 
 請只輸出 CSV 格式，不要其他說明文字。
 """
@@ -481,10 +522,14 @@ class OpenAIAnalyzer:
             logging.error(f"who_what 分析失敗: {e}")
             return "項目,名稱,說明／關係\n分析失敗,N/A,N/A"
 
-    def process_announcements(self, announcements, mysql_handler, output_dir="./analysis_output"):
+    def process_announcements(self, announcements, mysql_handler, output_dir="./analysis_output", analysis_types=None):
         """處理公告列表並生成分析結果"""
         import os
         os.makedirs(output_dir, exist_ok=True)
+        
+        # 預設執行所有分析類型
+        if analysis_types is None:
+            analysis_types = ['summary', 'when', 'how_much', 'who_what']
         
         # 合併檔案路徑
         when_file_path = f"{output_dir}/all_when_analysis.csv"
@@ -493,23 +538,23 @@ class OpenAIAnalyzer:
         summary_file_path = f"{output_dir}/all_summary_analysis.txt"
         
         # 檢查檔案是否已存在，決定是否需要寫入表頭
-        when_header_needed = not os.path.exists(when_file_path)
-        how_much_header_needed = not os.path.exists(how_much_file_path)
-        who_what_header_needed = not os.path.exists(who_what_file_path)
+        when_header_needed = not os.path.exists(when_file_path) and 'when' in analysis_types
+        how_much_header_needed = not os.path.exists(how_much_file_path) and 'how_much' in analysis_types
+        who_what_header_needed = not os.path.exists(who_what_file_path) and 'who_what' in analysis_types
         
-        # 以附加模式開啟檔案
-        when_file = open(when_file_path, 'a', encoding='utf-8')
-        how_much_file = open(how_much_file_path, 'a', encoding='utf-8')
-        who_what_file = open(who_what_file_path, 'a', encoding='utf-8')
-        summary_file = open(summary_file_path, 'a', encoding='utf-8')
+        # 以附加模式開啟檔案（只開啟需要的檔案）
+        when_file = open(when_file_path, 'a', encoding='utf-8') if 'when' in analysis_types else None
+        how_much_file = open(how_much_file_path, 'a', encoding='utf-8') if 'how_much' in analysis_types else None
+        who_what_file = open(who_what_file_path, 'a', encoding='utf-8') if 'who_what' in analysis_types else None
+        summary_file = open(summary_file_path, 'a', encoding='utf-8') if 'summary' in analysis_types else None
         
         try:
             # 如果需要，寫入表頭
-            if when_header_needed:
+            if when_header_needed and when_file:
                 when_file.write("公告ID,BAN,公司代碼,公司名稱,D_REALS,HR_REALS,OD,RULC,項目說明,日期時間\n")
-            if how_much_header_needed:
+            if how_much_header_needed and how_much_file:
                 how_much_file.write("公告ID,BAN,公司代碼,公司名稱,D_REALS,HR_REALS,OD,RULC,類別,項目說明,數值（原始）,單位,幣別\n")
-            if who_what_header_needed:
+            if who_what_header_needed and who_what_file:
                 who_what_file.write("公告ID,BAN,公司代碼,公司名稱,D_REALS,HR_REALS,OD,RULC,項目,名稱,說明／關係\n")
             
             for i, announcement in enumerate(announcements):
@@ -557,60 +602,73 @@ class OpenAIAnalyzer:
                         f.write("\n\n" + "=" * 50)
                     
                     # 生成各類分析（傳遞測試模式參數）
-                    logging.info(f"開始進行 4 種分析...")
+                    analysis_count = len(analysis_types)
+                    logging.info(f"開始進行 {analysis_count} 種分析: {', '.join(analysis_types)}")
                     
-                    summary_start = datetime.now()
-                    summary = self.analyze_summary(content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir, file_prefix)
-                    summary_time = datetime.now() - summary_start
-                    logging.info(f"摘要分析完成 ({summary_time.total_seconds():.2f}秒)")
+                    # 摘要分析
+                    if 'summary' in analysis_types:
+                        summary_start = datetime.now()
+                        summary = self.analyze_summary(content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir, file_prefix)
+                        summary_time = datetime.now() - summary_start
+                        logging.info(f"摘要分析完成 ({summary_time.total_seconds():.2f}秒)")
                     
-                    when_start = datetime.now()
-                    when_csv = self.analyze_when(content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir, file_prefix)
-                    when_time = datetime.now() - when_start
-                    logging.info(f"時間分析完成 ({when_time.total_seconds():.2f}秒)")
+                    # 時間分析
+                    if 'when' in analysis_types:
+                        when_start = datetime.now()
+                        when_csv = self.analyze_when(content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir, file_prefix)
+                        when_time = datetime.now() - when_start
+                        logging.info(f"時間分析完成 ({when_time.total_seconds():.2f}秒)")
                     
-                    how_much_start = datetime.now()
-                    how_much_csv = self.analyze_how_much(content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir, file_prefix)
-                    how_much_time = datetime.now() - how_much_start
-                    logging.info(f"數量金額分析完成 ({how_much_time.total_seconds():.2f}秒)")
+                    # 數量金額分析
+                    if 'how_much' in analysis_types:
+                        how_much_start = datetime.now()
+                        how_much_csv = self.analyze_how_much(content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir, file_prefix)
+                        how_much_time = datetime.now() - how_much_start
+                        logging.info(f"數量金額分析完成 ({how_much_time.total_seconds():.2f}秒)")
                     
-                    who_what_start = datetime.now()
-                    who_what_csv = self.analyze_who_what(content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir, file_prefix)
-                    who_what_time = datetime.now() - who_what_start
-                    logging.info(f"人物關係分析完成 ({who_what_time.total_seconds():.2f}秒)")
+                    # 人物關係分析
+                    if 'who_what' in analysis_types:
+                        who_what_start = datetime.now()
+                        who_what_csv = self.analyze_who_what(content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir, file_prefix)
+                        who_what_time = datetime.now() - who_what_start
+                        logging.info(f"人物關係分析完成 ({who_what_time.total_seconds():.2f}秒)")
                     
                     # 寫入摘要到合併檔案
-                    summary_file.write(f"=== 公告 {ann_id} - {ban} - {code} {name} ({d_reals}) ===\n")
-                    summary_file.write(f"BAN: {ban}, D_REALS: {d_reals}, HR_REALS: {hr_reals}, OD: {od}, RULC: {rulc}\n")
-                    summary_file.write(f"{summary}\n\n")
-                    summary_file.flush()  # 立即寫入檔案
+                    if 'summary' in analysis_types and summary_file:
+                        summary_file.write(f"=== 公告 {ann_id} - {ban} - {code} {name} ({d_reals}) ===\n")
+                        summary_file.write(f"BAN: {ban}, D_REALS: {d_reals}, HR_REALS: {hr_reals}, OD: {od}, RULC: {rulc}\n")
+                        summary_file.write(f"{summary}\n\n")
+                        summary_file.flush()  # 立即寫入檔案
                     
                     # 處理 when CSV - 加入公告資訊欄位
-                    when_lines = when_csv.strip().split('\n')
-                    if when_lines and when_lines[0].strip():
-                        # 跳過 CSV 的表頭行，從第二行開始處理
-                        for line in when_lines[1:]:
-                            if line.strip():
-                                when_file.write(f"{ann_id},{ban},{code},{name},{d_reals},{hr_reals},{od},{rulc},{line}\n")
-                        when_file.flush()  # 立即寫入檔案
+                    if 'when' in analysis_types and when_file:
+                        when_lines = when_csv.strip().split('\n')
+                        if when_lines and when_lines[0].strip():
+                            # 跳過 CSV 的表頭行，從第二行開始處理
+                            for line in when_lines[1:]:
+                                if line.strip():
+                                    when_file.write(f"{ann_id},{ban},{code},{name},{d_reals},{hr_reals},{od},{rulc},{line}\n")
+                            when_file.flush()  # 立即寫入檔案
                     
                     # 處理 how_much CSV - 加入公告資訊欄位
-                    how_much_lines = how_much_csv.strip().split('\n')
-                    if how_much_lines and how_much_lines[0].strip():
-                        # 跳過 CSV 的表頭行，從第二行開始處理
-                        for line in how_much_lines[1:]:
-                            if line.strip():
-                                how_much_file.write(f"{ann_id},{ban},{code},{name},{d_reals},{hr_reals},{od},{rulc},{line}\n")
-                        how_much_file.flush()  # 立即寫入檔案
+                    if 'how_much' in analysis_types and how_much_file:
+                        how_much_lines = how_much_csv.strip().split('\n')
+                        if how_much_lines and how_much_lines[0].strip():
+                            # 跳過 CSV 的表頭行，從第二行開始處理
+                            for line in how_much_lines[1:]:
+                                if line.strip():
+                                    how_much_file.write(f"{ann_id},{ban},{code},{name},{d_reals},{hr_reals},{od},{rulc},{line}\n")
+                            how_much_file.flush()  # 立即寫入檔案
                     
                     # 處理 who_what CSV - 加入公告資訊欄位
-                    who_what_lines = who_what_csv.strip().split('\n')
-                    if who_what_lines and who_what_lines[0].strip():
-                        # 跳過 CSV 的表頭行，從第二行開始處理
-                        for line in who_what_lines[1:]:
-                            if line.strip():
-                                who_what_file.write(f"{ann_id},{ban},{code},{name},{d_reals},{hr_reals},{od},{rulc},{line}\n")
-                        who_what_file.flush()  # 立即寫入檔案
+                    if 'who_what' in analysis_types and who_what_file:
+                        who_what_lines = who_what_csv.strip().split('\n')
+                        if who_what_lines and who_what_lines[0].strip():
+                            # 跳過 CSV 的表頭行，從第二行開始處理
+                            for line in who_what_lines[1:]:
+                                if line.strip():
+                                    who_what_file.write(f"{ann_id},{ban},{code},{name},{d_reals},{hr_reals},{od},{rulc},{line}\n")
+                            who_what_file.flush()  # 立即寫入檔案
                     
                     # 更新資料庫中的處理狀態
                     if mysql_handler.update_openai_processed_status(ann_id, True):
@@ -626,10 +684,14 @@ class OpenAIAnalyzer:
         
         finally:
             # 關閉所有檔案
-            when_file.close()
-            how_much_file.close()
-            who_what_file.close()
-            summary_file.close()
+            if when_file:
+                when_file.close()
+            if how_much_file:
+                how_much_file.close()
+            if who_what_file:
+                who_what_file.close()
+            if summary_file:
+                summary_file.close()
 
 def main():
     parser = argparse.ArgumentParser(description="OpenAI 公告分析器")
@@ -638,6 +700,10 @@ def main():
     parser.add_argument('--output-dir', default='./analysis_output', help='輸出目錄')
     parser.add_argument('--test-mode', action='store_true', help='測試模式：記錄所有與OpenAI的對話內容')
     parser.add_argument('--log-file', default=None, help='日誌檔案路徑（預設：自動生成時間戳記檔名）')
+    parser.add_argument('--analysis-types', nargs='+', 
+                        choices=['summary', 'when', 'how_much', 'who_what'],
+                        default=['summary', 'when', 'how_much', 'who_what'],
+                        help='指定要執行的分析類型，可選：summary, when, how_much, who_what')
     args = parser.parse_args()
     
     # 設定日誌檔案路徑
@@ -664,6 +730,7 @@ def main():
     logging.info("=" * 60)
     logging.info("OpenAI 公告分析器開始執行")
     logging.info(f"執行參數: config={args.config}, limit={args.limit}, output_dir={args.output_dir}")
+    logging.info(f"分析類型: {', '.join(args.analysis_types)}")
     logging.info(f"測試模式: {'啟用' if args.test_mode else '關閉'}")
     logging.info(f"限速處理機制: 啟用 (最大重試 {4} 次，連續成功 {5} 次重置)")
     logging.info(f"日誌檔案: {args.log_file}")
@@ -697,7 +764,7 @@ def main():
         
         # 處理公告
         start_time = datetime.now()
-        analyzer.process_announcements(announcements, mysql_handler, output_dir=args.output_dir)
+        analyzer.process_announcements(announcements, mysql_handler, output_dir=args.output_dir, analysis_types=args.analysis_types)
         end_time = datetime.now()
         
         mysql_handler.close()
