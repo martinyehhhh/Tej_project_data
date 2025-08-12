@@ -195,26 +195,44 @@ class OpenAIAnalyzer:
         with open(f"{output_dir}/{file_prefix}_{analysis_type}_openai_log.txt", 'w', encoding='utf-8') as f:
             f.write(log_content)
         
-    def get_cl1_announcements(self, mysql_handler, limit=None):
-        """從資料庫取得 RULC=1,11 的公告，並對應 tej_pu11_1 表的 txt 內容"""
+    def get_cl1_announcements(self, mysql_handler, limit=None, rulc_values=None):
+        """從資料庫取得指定 RULC 的公告，並對應 tej_pu11_1 表的 txt 內容
+        
+        Args:
+            mysql_handler: MySQL 連接處理器
+            limit: 限制筆數
+            rulc_values: RULC 值列表，預設為 [1, 11]
+        """
         if not mysql_handler.connection:
             logging.error("MySQL 未連接")
             return None
+        
+        # 設定預設的 RULC 值
+        if rulc_values is None:
+            rulc_values = [1, 11]
+        
+        # 確保 rulc_values 是列表格式
+        if not isinstance(rulc_values, list):
+            rulc_values = [rulc_values]
             
         try:
             cursor = mysql_handler.connection.cursor(dictionary=True)
-            # 先查詢 sbj_pu11 中 rulc in (1,11) 且尚未處理的公告，包含所有需要的欄位
-            sql = """
+            
+            # 構建 RULC 的 IN 條件
+            rulc_placeholders = ','.join(['%s'] * len(rulc_values))
+            
+            # 先查詢 sbj_pu11 中指定 rulc 且尚未處理的公告，包含所有需要的欄位
+            sql = f"""
             SELECT id, ban, code, name, d_reals, hr_reals, od, cl, rulc
             FROM sbj_pu11 
-            WHERE rulc IN (1, 11)
+            WHERE rulc IN ({rulc_placeholders})
             AND openai_processed = 0 
             ORDER BY d_reals DESC, hr_reals DESC
             """
             if limit:
                 sql += f" LIMIT {limit}"
                 
-            cursor.execute(sql)
+            cursor.execute(sql, rulc_values)
             announcements = cursor.fetchall()
             
             # 對每個公告查詢對應的 tej_pu11_1 內容並合併
@@ -244,11 +262,11 @@ class OpenAIAnalyzer:
                     announcement['content'] = combined_content
                     results.append(announcement)
             
-            logging.info(f"找到 {len(results)} 筆 RULC IN (1,11) 且尚未處理的公告有對應的 tej_pu11_1 內容")
+            logging.info(f"找到 {len(results)} 筆 RULC IN ({','.join(map(str, rulc_values))}) 且尚未處理的公告有對應的 tej_pu11_1 內容")
             return results
             
         except Exception as e:
-            logging.error(f"查詢 RULC IN (1,11) 公告失敗: {e}")
+            logging.error(f"查詢 RULC IN ({','.join(map(str, rulc_values))}) 公告失敗: {e}")
             return None
 
     def analyze_summary(self, content, ann_id, ban, code, name, d_reals, hr_reals, od, rulc, output_dir=None, file_prefix=None):
@@ -519,7 +537,7 @@ CSV欄位：類別,項目名稱,標的物,數值,單位,幣別,備註
 
 **關鍵要求：**
 - 類別：金額、數量、比率（只使用這三種分類）
-- 數值：純數字，無千分位逗號，過濾「約」字，**保留正負號**
+- 數值：純數字，**絕對禁止千分位逗號**，過濾「約」字，**保留正負號**
 - 數值和單位依原樣，不換算（6500萬→6500,萬元 而非 65000000,元）
 - 幣別依原文，百分比留空
 - 備註：投資關係、交易性質、約字說明、重複原因
@@ -528,6 +546,7 @@ CSV欄位：類別,項目名稱,標的物,數值,單位,幣別,備註
 - **重要：每個標的物的持股比率都要列出，即使數值相同也要分別記錄**
 - **重要：仔細檢查「累積持有」、「迄目前為止」等段落中的持股比率**
 - **重要：負數保留負號（如：-13797385），不要過濾負號**
+- **重要：數值欄位絕對不可使用千分位逗號（如：123456 不是 123,456），避免CSV格式錯亂**
 
 **範例：**
 類別,項目名稱,標的物,數值,單位,幣別,備註
@@ -587,93 +606,32 @@ CSV欄位：類別,項目名稱,標的物,數值,單位,幣別,備註
             # 設定 system message for 人物關係分析
             system_message = {
                 "role": "system", 
-                "content": """你是一位專業的企業關係分析師，專門從證交所公告中識別所有實體和關係。你必須採用「全面識別」方式，確保無任何實體和關係遺漏。
+                "content": """你是專業的交易分析師，從證交所公告中提取交易核心要素，以CSV格式輸出。
 
-**核心任務：**
-請分析證交所公告內容，提取所有相關人物、公司、機構、標的物及其相互關係，以CSV格式輸出。
+**任務：提取交易關鍵資訊**
+CSV欄位：標的物,買方,賣方,交易人雙方關係,交易金額
 
-**全面搜索以下所有類型的實體和關係：**
+**提取要求：**
+- **標的物**：具體說明股權比例、資產名稱、數量單位
+- **買方/賣方**：使用完整公司全稱（含"股份有限公司"等，禁用縮寫）
+- **雙方關係**：關係人/非關係人交易、母子公司、關聯企業等
+- **交易金額**：含幣別的完整金額表達，**金額數字絕對禁止千分位逗號**
 
-**交易主體類：**
-- 買方、受讓方、投資方、收購方
-- 賣方、轉讓方、被投資方、被收購方
-- 委託方、受託方、代理方
-- 合作方、合作對象、夥伴方
-- 承銷商、保薦人、財務顧問
-
-**公司實體類：**
-- 母公司、子公司、孫公司
-- 關聯企業、關係企業、集團企業
-- 合資公司、合營企業、聯營企業
-- 被投資公司、轉投資公司
-- 控股公司、營運公司、管理公司
-
-**投資標的類：**
-- 投資標的公司、標的企業
-- 投資標的股權、股份、持分
-- 投資標的資產、不動產、設備
-- 投資標的債券、基金、衍生性商品
-- 其他投資標的物
-
-**人員角色類：**
-- 董事、董事長、獨立董事
-- 經理人、總經理、執行長
-- 監察人、審計委員
-- 大股東、法人股東、自然人股東
-- 關係人、內部人
-
-**機構組織類：**
-- 會計師事務所、律師事務所
-- 評價機構、信評機構
-- 銀行、證券商、投信投顧
-- 政府機關、主管機關
-- 交易所、櫃買中心
-
-**關係描述類：**
-- 持股關係、控制關係、從屬關係
-- 投資關係、被投資關係
-- 交易關係、合作關係
-- 親屬關係、關聯關係
-- 委任關係、代理關係
-
-**輸出格式要求：**
-請參考以下格式輸出CSV：
-項目,名稱,說明／關係
-公告主體,台灣水泥股份有限公司,本次交易之公告公司
-投資標的,Cimpor Global Holdings B.V.,荷蘭公司普通股100%股權，從事水泥事業投資控股
-買方（交易主體）,Taiwan Cement (Dutch) Holdings B.V.,台灣水泥公司100%持股之荷蘭子公司，負責海外投資業務
-賣方（交易相對人）,OYAK Capital Investments B.V.,荷蘭投資公司，非關係人，專業投資機構
-交易顧問,德勤財務顧問股份有限公司,本次交易之財務顧問，提供估值及交易結構建議
-法律顧問,萬國法律事務所,本次交易之法律顧問，負責合約審查及法律意見
-買方與公告主體關係,Taiwan Cement (Dutch) Holdings B.V.,台灣水泥公司之100%持股子公司
-賣方與買方關係,無關聯關係,經查核確認為非關係人交易
-標的公司與買方關係,現有投資關係,Taiwan Cement (Dutch) 目前持有40%股權，擬增持至100%
-標的公司營運狀況,獲利穩定,近三年平均ROE 15%，主要市場為歐洲水泥市場
-母公司控制架構,台灣水泥→TCC Dutch→Cimpor,透過層級控股結構進行海外投資管理
-
-**重要注意事項：**
-1. 提取所有具體的公司名稱（包括中文、英文、各國語言）
-2. 提取所有人員姓名和職務
-3. 提取所有機構名稱和類型
-4. 包含完整的法人實體和自然人
-5. 詳細說明每個實體之間的具體關係
-6. 包含持股比例、控制關係、合作性質
-7. 說明關係的形成原因和影響
-8. 區分直接關係和間接關係
-9. 提供每個實體的業務性質和背景
-10. 說明在本次交易中的角色和功能
-11. 包含相關的財務狀況或營運資訊
-12. 註明是否為關係人及關係性質
+**輸出格式範例：**
+標的物,買方,賣方,交易人雙方關係,交易金額
+Cimpor Global Holdings B.V.普通股100%股權,台灣水泥股份有限公司,OYAK Capital Investments B.V.,非關係人交易,約6500萬歐元
+A公司普通股50%股權,B股份有限公司,C股份有限公司,關聯企業,新台幣1000萬元
 
 **執行原則：**
-- 確保每個提及的實體都有對應的關係說明
-- 包含所有層級的控股結構
-- 涵蓋所有參與交易的各方
-- 不遺漏任何中介機構或顧問
-- 每個實體都要有詳細的說明，避免使用「相關公司」等模糊描述
-- 完全保持原文中的公司名稱、人員姓名和關係描述，不要進行翻譯或修改
+1. 公司名稱使用完整全稱，不可縮寫
+2. 多筆交易分行列出
+3. 資訊不明確時填入"資訊不明"
+4. 保持原文準確性
+5. 必須包含 CSV 表頭行
+6. **重要：交易金額中的數字絕對不可使用千分位逗號（如：1000000 不是 1,000,000），避免CSV格式錯亂**
+7. **CSV格式重要：如果公司名稱或標的物名稱中有逗號，請將逗號替換為空格（例如：Tesla, Inc. → Tesla Inc.）**
 
-請只輸出CSV格式，不要其他說明文字。"""
+請輸出完整的CSV格式（包含表頭）。"""
             }
             
             messages = [
@@ -696,7 +654,7 @@ CSV欄位：類別,項目名稱,標的物,數值,單位,幣別,備註
             return result
         except Exception as e:
             logging.error(f"who_what 分析失敗: {e}")
-            return "項目,名稱,說明／關係\n分析失敗,N/A,N/A"
+            return "標的物,買方,賣方,交易人雙方關係,交易金額\n分析失敗,N/A,N/A,N/A,N/A"
 
     def process_announcements(self, announcements, mysql_handler, output_dir="./analysis_output", analysis_types=None):
         """處理公告列表並生成分析結果"""
@@ -731,7 +689,7 @@ CSV欄位：類別,項目名稱,標的物,數值,單位,幣別,備註
             if how_much_header_needed and how_much_file:
                 how_much_file.write("公告ID,BAN,公司代碼,公司名稱,D_REALS,HR_REALS,OD,RULC,類別,項目名稱,標的物,數值,單位,幣別,備註\n")
             if who_what_header_needed and who_what_file:
-                who_what_file.write("公告ID,BAN,公司代碼,公司名稱,D_REALS,HR_REALS,OD,RULC,項目,名稱,說明／關係\n")
+                who_what_file.write("公告ID,BAN,公司代碼,公司名稱,D_REALS,HR_REALS,OD,RULC,標的物,買方,賣方,交易人雙方關係,交易金額\n")
             
             for i, announcement in enumerate(announcements):
                 try:
@@ -872,7 +830,7 @@ CSV欄位：類別,項目名稱,標的物,數值,單位,幣別,備註
 def main():
     parser = argparse.ArgumentParser(description="OpenAI 公告分析器")
     parser.add_argument('--config', default='config.ini', help='設定檔路徑')
-    parser.add_argument('--limit', type=int, default=20, help='處理公告數量限制')
+    parser.add_argument('--limit', type=int, default=None, help='處理公告數量限制，預設為 None (處理全部公告)')
     parser.add_argument('--output-dir', default='./analysis_output', help='輸出目錄')
     parser.add_argument('--test-mode', action='store_true', help='測試模式：記錄所有與OpenAI的對話內容')
     parser.add_argument('--log-file', default=None, help='日誌檔案路徑（預設：自動生成時間戳記檔名）')
@@ -880,6 +838,8 @@ def main():
                         choices=['summary', 'when', 'how_much', 'who_what'],
                         default=['summary', 'when', 'how_much', 'who_what'],
                         help='指定要執行的分析類型，可選：summary, when, how_much, who_what')
+    parser.add_argument('--rulc', nargs='+', type=int, default=[1, 11],
+                        help='指定要查詢的 RULC 值，可輸入多個值，預設為 1 11')
     args = parser.parse_args()
     
     # 設定日誌檔案路徑
@@ -907,6 +867,7 @@ def main():
     logging.info("OpenAI 公告分析器開始執行")
     logging.info(f"執行參數: config={args.config}, limit={args.limit}, output_dir={args.output_dir}")
     logging.info(f"分析類型: {', '.join(args.analysis_types)}")
+    logging.info(f"RULC 查詢範圍: {', '.join(map(str, args.rulc))}")
     logging.info(f"測試模式: {'啟用' if args.test_mode else '關閉'}")
     logging.info(f"限速處理機制: 啟用 (最大重試 {4} 次，連續成功 {5} 次重置)")
     logging.info(f"日誌檔案: {args.log_file}")
@@ -930,13 +891,13 @@ def main():
             logging.error("選擇資料庫失敗")
             return
             
-        # 取得 RULC IN (1,11) 的公告
-        announcements = analyzer.get_cl1_announcements(mysql_handler, limit=args.limit)
+        # 取得指定 RULC 的公告
+        announcements = analyzer.get_cl1_announcements(mysql_handler, limit=args.limit, rulc_values=args.rulc)
         if not announcements:
-            logging.error("未找到 RULC IN (1,11) 的公告")
+            logging.error(f"未找到 RULC IN ({','.join(map(str, args.rulc))}) 的公告")
             return
             
-        logging.info(f"找到 {len(announcements)} 筆 RULC IN (1,11) 公告，開始分析...")
+        logging.info(f"找到 {len(announcements)} 筆 RULC IN ({','.join(map(str, args.rulc))}) 公告，開始分析...")
         
         # 處理公告
         start_time = datetime.now()
