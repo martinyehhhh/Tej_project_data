@@ -3,7 +3,7 @@
 """
 OpenAI API 公告分析器
 針對 sbj_pu11 表中 RULC IN (1,11) 的公告進行結構化分析
-生成摘要、when、how_much、who_what 四種 CSV 格式解析
+生成摘要、when、how_much、who_what 四種 Excel 格式解析
 """
 
 import openai
@@ -16,6 +16,9 @@ from create_mysql_db import MySQLHandler
 import configparser
 import tiktoken
 import time
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
+import io
 
 class OpenAIAnalyzer:
     def __init__(self, config_file='config.ini', test_mode=False):
@@ -440,38 +443,40 @@ class OpenAIAnalyzer:
 - 任何其他明確的日期或時間
 
 **輸出格式要求：**
-請參考以下格式輸出CSV：
-項目說明,日期時間
-發言日期,113/07/09
-發言時間,21:34:40
-事實發生日,113/07/09
-董事會決議日,113/07/01
-簽約日期,2024年7月5日
-交易期間（起始）,113/07/08
-交易期間（結束）,113/07/09
-交割預定日,113/07/15
-付款期限,合約簽署後30日內
-預計完成日,113年第3季
-財報基準日,113/06/30
-股東會召開日,113/08/15 上午9時
+請參考以下格式輸出CSV，每個欄位都必須用雙引號包圍：
+"項目說明","日期時間"
+"發言日期","113/07/09"
+"發言時間","21:34:40"
+"事實發生日","113/07/09"
+"董事會決議日","113/07/01"
+"簽約日期","2024年7月5日"
+"交易期間（起始）","113/07/08"
+"交易期間（結束）","113/07/09"
+"交割預定日","113/07/15"
+"付款期限","合約簽署後30日內"
+"預計完成日","113年第3季"
+"財報基準日","113/06/30"
+"股東會召開日","113/08/15 上午9時"
 
 **重要注意事項：**
-1. 完全保持原文格式，不進行任何轉換
-2. 民國年保持民國年格式（如：113/07/09、民國113年7月9日）
-3. 西元年保持西元年格式（如：2024/07/09、2024年7月9日）
-4. 保留原文的時間表達方式（如：上午、下午、AM、PM）
-5. 保留完整的時間描述（包括年、月、日、時、分、秒）
-6. 包含相對時間描述（如：簽約後30天、會計年度結束前等）
-7. 包含時間範圍和期間（如：2024年1月至3月、第一季度等）
-8. 包含重複提及的相同時間（每次提及都要列出）
-9. 注意隱含的時間資訊（如：「昨日」、「本月」、「去年」等）
+1. **所有欄位都必須用雙引號包圍，包括表頭**
+2. 完全保持原文格式，不進行任何轉換
+3. 民國年保持民國年格式（如：113/07/09、民國113年7月9日）
+4. 西元年保持西元年格式（如：2024/07/09、2024年7月9日）
+5. 保留原文的時間表達方式（如：上午、下午、AM、PM）
+6. 保留完整的時間描述（包括年、月、日、時、分、秒）
+7. 包含相對時間描述（如：簽約後30天、會計年度結束前等）
+8. 包含時間範圍和期間（如：2024年1月至3月、第一季度等）
+9. 包含重複提及的相同時間（每次提及都要列出）
+10. 注意隱含的時間資訊（如：「昨日」、「本月」、「去年」等）
 
 **執行原則：**
 - 仔細檢查每個段落，確保所有日期都被提取
 - 寧可多提取也不可遺漏任何時間資訊
 - 完全維持原文的日期時間格式，不要進行任何轉換或統一化處理
+- **確保每個欄位都用雙引號包圍，避免逗號造成欄位錯亂**
 
-請只輸出CSV格式，不要其他說明文字。如果某個時間資訊不存在，請省略該行。"""
+請只輸出CSV格式（所有欄位用雙引號包圍），不要其他說明文字。如果某個時間資訊不存在，請省略該行。"""
             }
             
             messages = [
@@ -533,7 +538,8 @@ class OpenAIAnalyzer:
 - 營運資金、交易數量、合計金額、任何數值和百分比
 
 **輸出格式：**
-CSV欄位：類別,項目名稱,標的物,數值,單位,幣別,備註
+CSV欄位：所有欄位都必須用雙引號包圍
+"類別","項目名稱","標的物","數值","單位","幣別","備註"
 
 **關鍵要求：**
 - 類別：金額、數量、比率（只使用這三種分類）
@@ -547,17 +553,18 @@ CSV欄位：類別,項目名稱,標的物,數值,單位,幣別,備註
 - **重要：仔細檢查「累積持有」、「迄目前為止」等段落中的持股比率**
 - **重要：負數保留負號（如：-13797385），不要過濾負號**
 - **重要：數值欄位絕對不可使用千分位逗號（如：123456 不是 123,456），避免CSV格式錯亂**
+- **重要：所有欄位都必須用雙引號包圍，避免逗號造成欄位錯亂**
 
 **範例：**
-類別,項目名稱,標的物,數值,單位,幣別,備註
-金額,投資總金額,Cimpor Global Holdings B.V.,6500,萬元,歐元,原文為約6500萬元，已過濾約字
-比率,持股比率,TCC Dutch 對 TCAH 股份,60,%,,TCC Dutch 持有 TCAH 股份比例
-比率,持股比率,TCC Oyak Amsterdam Holdings B.V.,60,%,,TCC Dutch 持有 TCAH 股份比例
-比率,持股比率,Cimpor Portugal Holdings SGPS S.A.,100,%,,TCCE 持有 Cimpor 股份比例
-數量,累積持有股數,台泥對台泥儲能,600600,仟股,,台泥持有台泥儲能累積股數
-金額,營運資金,公司整體,-13797385,仟元,新台幣,負數表示營運資金為負值
+"類別","項目名稱","標的物","數值","單位","幣別","備註"
+"金額","投資總金額","Cimpor Global Holdings B.V.","6500","萬元","歐元","原文為約6500萬元，已過濾約字"
+"比率","持股比率","TCC Dutch 對 TCAH 股份","60","%","","TCC Dutch 持有 TCAH 股份比例"
+"比率","持股比率","TCC Oyak Amsterdam Holdings B.V.","60","%","","TCC Dutch 持有 TCAH 股份比例"
+"比率","持股比率","Cimpor Portugal Holdings SGPS S.A.","100","%","","TCCE 持有 Cimpor 股份比例"
+"數量","累積持有股數","台泥對台泥儲能","600600","仟股","","台泥持有台泥儲能累積股數"
+"金額","營運資金","公司整體","-13797385","仟元","新台幣","負數表示營運資金為負值"
 
-請只輸出CSV格式，不要其他說明文字。"""
+請只輸出CSV格式（所有欄位用雙引號包圍），不要其他說明文字。"""
             }
             
             messages = [
@@ -609,7 +616,8 @@ CSV欄位：類別,項目名稱,標的物,數值,單位,幣別,備註
                 "content": """你是專業的交易分析師，從證交所公告中提取交易核心要素，以CSV格式輸出。
 
 **任務：提取交易關鍵資訊**
-CSV欄位：標的物,買方,賣方,交易人雙方關係,交易金額
+CSV欄位：所有欄位都必須用雙引號包圍
+"標的物","買方","賣方","交易人雙方關係","交易金額"
 
 **提取要求：**
 - **標的物**：具體說明股權比例、資產名稱、數量單位
@@ -618,9 +626,9 @@ CSV欄位：標的物,買方,賣方,交易人雙方關係,交易金額
 - **交易金額**：含幣別的完整金額表達，**金額數字絕對禁止千分位逗號**
 
 **輸出格式範例：**
-標的物,買方,賣方,交易人雙方關係,交易金額
-Cimpor Global Holdings B.V.普通股100%股權,台灣水泥股份有限公司,OYAK Capital Investments B.V.,非關係人交易,約6500萬歐元
-A公司普通股50%股權,B股份有限公司,C股份有限公司,關聯企業,新台幣1000萬元
+"標的物","買方","賣方","交易人雙方關係","交易金額"
+"Cimpor Global Holdings B.V.普通股100%股權","台灣水泥股份有限公司","OYAK Capital Investments B.V.","非關係人交易","約6500萬歐元"
+"A公司普通股50%股權","B股份有限公司","C股份有限公司","關聯企業","新台幣1000萬元"
 
 **執行原則：**
 1. 公司名稱使用完整全稱，不可縮寫
@@ -629,9 +637,9 @@ A公司普通股50%股權,B股份有限公司,C股份有限公司,關聯企業,�
 4. 保持原文準確性
 5. 必須包含 CSV 表頭行
 6. **重要：交易金額中的數字絕對不可使用千分位逗號（如：1000000 不是 1,000,000），避免CSV格式錯亂**
-7. **CSV格式重要：如果公司名稱或標的物名稱中有逗號，請將逗號替換為空格（例如：Tesla, Inc. → Tesla Inc.）**
+7. **重要：所有欄位都必須用雙引號包圍，避免逗號造成欄位錯亂**
 
-請輸出完整的CSV格式（包含表頭）。"""
+請輸出完整的CSV格式（包含表頭，所有欄位用雙引號包圍）。"""
             }
             
             messages = [
@@ -656,8 +664,109 @@ A公司普通股50%股權,B股份有限公司,C股份有限公司,關聯企業,�
             logging.error(f"who_what 分析失敗: {e}")
             return "標的物,買方,賣方,交易人雙方關係,交易金額\n分析失敗,N/A,N/A,N/A,N/A"
 
+    def write_to_excel(self, file_path, data_rows, headers, sheet_name="Sheet1"):
+        """
+        將資料寫入 Excel 檔案
+        
+        Args:
+            file_path (str): Excel 檔案路徑
+            data_rows (list): 資料行列表，每行是一個列表
+            headers (list): 表頭列表
+            sheet_name (str): 工作表名稱
+        """
+        import os
+        try:
+            # 檢查檔案是否存在
+            if os.path.exists(file_path):
+                # 檔案存在，加載現有的工作簿
+                workbook = openpyxl.load_workbook(file_path)
+                if sheet_name in workbook.sheetnames:
+                    worksheet = workbook[sheet_name]
+                else:
+                    worksheet = workbook.create_sheet(sheet_name)
+            else:
+                # 檔案不存在，創建新的工作簿
+                workbook = openpyxl.Workbook()
+                worksheet = workbook.active
+                worksheet.title = sheet_name
+                
+                # 寫入表頭
+                for col, header in enumerate(headers, 1):
+                    cell = worksheet.cell(row=1, column=col, value=header)
+                    # 設定表頭樣式
+                    cell.font = Font(bold=True, color="FFFFFF")
+                    cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+                    cell.alignment = Alignment(horizontal="center")
+            
+            # 找到下一個可用的行
+            next_row = worksheet.max_row + 1
+            
+            # 寫入資料行
+            for data_row in data_rows:
+                for col, value in enumerate(data_row, 1):
+                    worksheet.cell(row=next_row, column=col, value=value)
+                next_row += 1
+            
+            # 自動調整欄寬
+            for column in worksheet.columns:
+                max_length = 0
+                column_letter = column[0].column_letter
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)  # 最大寬度限制為50
+                worksheet.column_dimensions[column_letter].width = adjusted_width
+            
+            # 儲存檔案
+            workbook.save(file_path)
+            logging.info(f"已將 {len(data_rows)} 行資料寫入 Excel 檔案: {file_path}")
+            
+        except Exception as e:
+            logging.error(f"寫入 Excel 檔案失敗 {file_path}: {e}")
+    
+    def csv_to_excel_data(self, csv_text, ann_id, ban, code, name, d_reals, hr_reals, od, rulc):
+        """
+        將 CSV 文本轉換為 Excel 資料行
+        支援雙引號包圍的 CSV 格式
+        """
+        import csv
+        import io
+        
+        try:
+            lines = csv_text.strip().split('\n')
+            data_rows = []
+            
+            # 跳過表頭，從第二行開始處理
+            for line in lines[1:]:
+                if line.strip():
+                    # 使用 Python 的 csv 模組來正確解析帶引號的 CSV
+                    try:
+                        # 創建一個 StringIO 物件來模擬檔案
+                        csv_reader = csv.reader(io.StringIO(line))
+                        csv_fields = next(csv_reader)
+                        
+                        # 構建完整的資料行（加入公告基本資訊）
+                        full_row = [ann_id, ban, code, name, d_reals, hr_reals, od, rulc] + csv_fields
+                        data_rows.append(full_row)
+                        
+                    except Exception as parse_error:
+                        logging.warning(f"CSV 行解析失敗: {line}, 錯誤: {parse_error}")
+                        # 如果標準 CSV 解析失敗，回退到簡單分割
+                        fallback_fields = [field.strip(' "') for field in line.split(',')]
+                        full_row = [ann_id, ban, code, name, d_reals, hr_reals, od, rulc] + fallback_fields
+                        data_rows.append(full_row)
+            
+            return data_rows
+            
+        except Exception as e:
+            logging.error(f"CSV 轉換失敗: {e}")
+            return []
+
     def process_announcements(self, announcements, mysql_handler, output_dir="./analysis_output", analysis_types=None):
-        """處理公告列表並生成分析結果"""
+        """處理公告列表並生成分析結果 - 輸出為 Excel 格式"""
         import os
         os.makedirs(output_dir, exist_ok=True)
         
@@ -665,32 +774,21 @@ A公司普通股50%股權,B股份有限公司,C股份有限公司,關聯企業,�
         if analysis_types is None:
             analysis_types = ['summary', 'when', 'how_much', 'who_what']
         
-        # 合併檔案路徑
-        when_file_path = f"{output_dir}/all_when_analysis.csv"
-        how_much_file_path = f"{output_dir}/all_how_much_analysis.csv"
-        who_what_file_path = f"{output_dir}/all_who_what_analysis.csv"
+        # 合併檔案路徑 - 改為 Excel 格式
+        when_file_path = f"{output_dir}/all_when_analysis.xlsx"
+        how_much_file_path = f"{output_dir}/all_how_much_analysis.xlsx"
+        who_what_file_path = f"{output_dir}/all_who_what_analysis.xlsx"
         summary_file_path = f"{output_dir}/all_summary_analysis.txt"
         
-        # 檢查檔案是否已存在，決定是否需要寫入表頭
-        when_header_needed = not os.path.exists(when_file_path) and 'when' in analysis_types
-        how_much_header_needed = not os.path.exists(how_much_file_path) and 'how_much' in analysis_types
-        who_what_header_needed = not os.path.exists(who_what_file_path) and 'who_what' in analysis_types
+        # 定義 Excel 表頭
+        when_headers = ["公告ID", "BAN", "公司代碼", "公司名稱", "D_REALS", "HR_REALS", "OD", "RULC", "項目說明", "日期時間"]
+        how_much_headers = ["公告ID", "BAN", "公司代碼", "公司名稱", "D_REALS", "HR_REALS", "OD", "RULC", "類別", "項目名稱", "標的物", "數值", "單位", "幣別", "備註"]
+        who_what_headers = ["公告ID", "BAN", "公司代碼", "公司名稱", "D_REALS", "HR_REALS", "OD", "RULC", "標的物", "買方", "賣方", "交易人雙方關係", "交易金額"]
         
-        # 以附加模式開啟檔案（只開啟需要的檔案）
-        when_file = open(when_file_path, 'a', encoding='utf-8') if 'when' in analysis_types else None
-        how_much_file = open(how_much_file_path, 'a', encoding='utf-8') if 'how_much' in analysis_types else None
-        who_what_file = open(who_what_file_path, 'a', encoding='utf-8') if 'who_what' in analysis_types else None
+        # 摘要檔案仍然使用文字格式
         summary_file = open(summary_file_path, 'a', encoding='utf-8') if 'summary' in analysis_types else None
         
         try:
-            # 如果需要，寫入表頭
-            if when_header_needed and when_file:
-                when_file.write("公告ID,BAN,公司代碼,公司名稱,D_REALS,HR_REALS,OD,RULC,項目說明,日期時間\n")
-            if how_much_header_needed and how_much_file:
-                how_much_file.write("公告ID,BAN,公司代碼,公司名稱,D_REALS,HR_REALS,OD,RULC,類別,項目名稱,標的物,數值,單位,幣別,備註\n")
-            if who_what_header_needed and who_what_file:
-                who_what_file.write("公告ID,BAN,公司代碼,公司名稱,D_REALS,HR_REALS,OD,RULC,標的物,買方,賣方,交易人雙方關係,交易金額\n")
-            
             for i, announcement in enumerate(announcements):
                 try:
                     ann_id = announcement['id']
@@ -767,42 +865,30 @@ A公司普通股50%股權,B股份有限公司,C股份有限公司,關聯企業,�
                         who_what_time = datetime.now() - who_what_start
                         logging.info(f"人物關係分析完成 ({who_what_time.total_seconds():.2f}秒)")
                     
-                    # 寫入摘要到合併檔案
-                    if 'summary' in analysis_types and summary_file:
+                    # 寫入摘要到文字檔案
+                    if 'summary' in analysis_types and summary_file and summary:
                         summary_file.write(f"=== 公告 {ann_id} - {ban} - {code} {name} ({d_reals}) ===\n")
                         summary_file.write(f"BAN: {ban}, D_REALS: {d_reals}, HR_REALS: {hr_reals}, OD: {od}, RULC: {rulc}\n")
                         summary_file.write(f"{summary}\n\n")
-                        summary_file.flush()  # 立即寫入檔案
+                        summary_file.flush()
                     
-                    # 處理 when CSV - 加入公告資訊欄位
-                    if 'when' in analysis_types and when_file:
-                        when_lines = when_csv.strip().split('\n')
-                        if when_lines and when_lines[0].strip():
-                            # 跳過 CSV 的表頭行，從第二行開始處理
-                            for line in when_lines[1:]:
-                                if line.strip():
-                                    when_file.write(f"{ann_id},{ban},{code},{name},{d_reals},{hr_reals},{od},{rulc},{line}\n")
-                            when_file.flush()  # 立即寫入檔案
+                    # 寫入時間分析到 Excel
+                    if 'when' in analysis_types and when_csv:
+                        when_data = self.csv_to_excel_data(when_csv, ann_id, ban, code, name, d_reals, hr_reals, od, rulc)
+                        if when_data:
+                            self.write_to_excel(when_file_path, when_data, when_headers, "時間分析")
                     
-                    # 處理 how_much CSV - 加入公告資訊欄位
-                    if 'how_much' in analysis_types and how_much_file:
-                        how_much_lines = how_much_csv.strip().split('\n')
-                        if how_much_lines and how_much_lines[0].strip():
-                            # 跳過 CSV 的表頭行，從第二行開始處理
-                            for line in how_much_lines[1:]:
-                                if line.strip():
-                                    how_much_file.write(f"{ann_id},{ban},{code},{name},{d_reals},{hr_reals},{od},{rulc},{line}\n")
-                            how_much_file.flush()  # 立即寫入檔案
+                    # 寫入數量金額分析到 Excel
+                    if 'how_much' in analysis_types and how_much_csv:
+                        how_much_data = self.csv_to_excel_data(how_much_csv, ann_id, ban, code, name, d_reals, hr_reals, od, rulc)
+                        if how_much_data:
+                            self.write_to_excel(how_much_file_path, how_much_data, how_much_headers, "數量金額分析")
                     
-                    # 處理 who_what CSV - 加入公告資訊欄位
-                    if 'who_what' in analysis_types and who_what_file:
-                        who_what_lines = who_what_csv.strip().split('\n')
-                        if who_what_lines and who_what_lines[0].strip():
-                            # 跳過 CSV 的表頭行，從第二行開始處理
-                            for line in who_what_lines[1:]:
-                                if line.strip():
-                                    who_what_file.write(f"{ann_id},{ban},{code},{name},{d_reals},{hr_reals},{od},{rulc},{line}\n")
-                            who_what_file.flush()  # 立即寫入檔案
+                    # 寫入人物關係分析到 Excel
+                    if 'who_what' in analysis_types and who_what_csv:
+                        who_what_data = self.csv_to_excel_data(who_what_csv, ann_id, ban, code, name, d_reals, hr_reals, od, rulc)
+                        if who_what_data:
+                            self.write_to_excel(who_what_file_path, who_what_data, who_what_headers, "交易分析")
                     
                     # 更新資料庫中的處理狀態
                     if mysql_handler.update_openai_processed_status(ann_id, True):
@@ -817,15 +903,19 @@ A公司普通股50%股權,B股份有限公司,C股份有限公司,關聯企業,�
                     continue
         
         finally:
-            # 關閉所有檔案
-            if when_file:
-                when_file.close()
-            if how_much_file:
-                how_much_file.close()
-            if who_what_file:
-                who_what_file.close()
+            # 關閉摘要檔案
             if summary_file:
                 summary_file.close()
+                
+        logging.info(f"所有分析完成！")
+        if 'when' in analysis_types:
+            logging.info(f"時間分析結果: {when_file_path}")
+        if 'how_much' in analysis_types:
+            logging.info(f"數量金額分析結果: {how_much_file_path}")
+        if 'who_what' in analysis_types:
+            logging.info(f"交易分析結果: {who_what_file_path}")
+        if 'summary' in analysis_types:
+            logging.info(f"摘要分析結果: {summary_file_path}")
 
 def main():
     parser = argparse.ArgumentParser(description="OpenAI 公告分析器")
